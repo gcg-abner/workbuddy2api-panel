@@ -68,7 +68,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 🗑️ **指纹脱敏** | 出站请求体黑名单指纹字段清洗（可关闭），与提示词体系两层叠加 |
 | 📊 **可观测** | 每请求一行表格日志（TTFB / token 速率 / uid）；`/healthz` 带 `service` 身份标识可接负载均衡 / 宿主探活 |
 | 💾 **状态持久化** | 池状态本地原子落盘 + Upstash Redis 异步镜像（可选），重启择新恢复 |
-| 🖥️ **Web 管理面板** | 内嵌单页面板（明暗主题，七个视图）：账号运维 / 用量与积分分析 / 模型档位条件查询 / 在线改配置（热生效）/ 运行日志（含**调用来源 IP·UA** 与时间区间）/ 积分任务，见 [Web 管理面板](#-web-管理面板) |
+| 🖥️ **Web 管理面板** | 内嵌单页面板（账号登录，明暗主题，八个视图）：账号运维 / 用量与积分分析 / 模型档位条件查询 / 在线改配置（热生效）/ 运行日志（含**调用来源 IP·UA** 与时间区间）/ 积分任务 / 用户管理，见 [Web 管理面板](#-web-管理面板) |
 
 ## 🎯 成长任务一键完成（17/18）
 
@@ -264,7 +264,11 @@ curl -s http://localhost:7863/healthz
 # {"healthy":0,"total":0,"service":"workbuddy2api"}
 ```
 
-启动后打开 **`http://localhost:7863/panel/`**，用面板「添加账号」完成登录（见下节）。
+启动后打开 **`http://localhost:7863/panel/`**，先使用启动日志中打印的管理员账号/初始密码登录，再用面板「添加账号」完成 OAuth 登录（见下节）：
+
+```bash
+docker compose logs | grep '初始密码'   # 首次启动打印一次；登录后请立即修改
+```
 
 常用运维命令：
 
@@ -283,7 +287,7 @@ go build -trimpath -ldflags="-s -w" -o wb2api.exe ./cmd/server
 # 2) 直接运行：首次启动自动生成 config.json（含随机 api_key，日志打印一次）
 .\wb2api.exe -config config.json
 
-# 3) 浏览器打开面板添加账号
+# 3) 浏览器打开面板，用启动日志里的管理员账号/初始密码登录后添加账号
 #    http://127.0.0.1:7863/panel/
 ```
 
@@ -627,8 +631,19 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 http://127.0.0.1:7863/panel/
 ```
 
-鉴权与 API 同口径：`api_key` 非空时面板要求输入一次密钥（浏览器 localStorage 记住）；为空则直接可用。
-界面支持**明暗主题切换**（首次跟随系统偏好，点击按钮两态翻转并记住选择），左侧导航七个视图：
+**面板账号登录（默认启用）**：未登录访问 `/panel/` 会 302 到 `/panel/login`，凭用户名 + 密码登录后才能进入管理页面；
+`/panel/api/*` 接受**登录会话 Cookie**或**有效 `api_key` Bearer**（脚本/兼容路径）。用户与口令摘要保存在
+`data/panel_users.json`（与 `state_file` 同目录，PBKDF2-SHA256，文件权限 0600），**不存明文密码**。
+
+- **首次启动**自动创建管理员 `admin`，随机初始密码**只打印一次**到启动日志（`docker logs` / 控制台），登录后请在
+  「用户管理 → 修改我的密码」立即修改；
+- 可用环境变量 `PANEL_ADMIN_USER` / `PANEL_ADMIN_PASSWORD` 指定首次创建的管理员（仅在用户文件不存在时生效）；
+- 「用户管理」页：管理员可新增用户、重置密码、删除用户；所有登录用户都可在此修改自己的密码；
+- 会话 Cookie 为 `HttpOnly + SameSite=Lax`，有效期 24h（重启进程后需重新登录）；HTTPS 反代下自动加 `Secure`；
+- 同一来源 5 分钟内连续 10 次登录失败会被暂时限流；
+- 遗忘管理员密码时，停止服务并删除 `data/panel_users.json`（或移走）后重启，会重新生成初始管理员。
+
+界面支持**明暗主题切换**（首次跟随系统偏好，点击按钮两态翻转并记住选择），左侧导航八个视图（「用户管理」中的用户列表/新增仅管理员可见，所有登录用户都可改自己的密码）：
 
 | 视图 | 功能 |
 |---|---|
@@ -639,6 +654,7 @@ http://127.0.0.1:7863/panel/
 | **模型与档位** | 实时查询上游：每模型的积分倍率（含限时免费 / 夜间折扣等**生效价**与划线牌价）、默认思考档、支持的档位（含「off（可关）」）、上下文长度与最大输出；存在探测数据时最大输出列显示**实测上限与钳制告警**（见「探测模型真实输出上限」）。支持**按条件查询**：关键词（ID / 名称 / 描述 / 厂商 / 标签，空格分词 AND）、域（CN / Global）、能力（工具 / 视觉 / 思考 / 默认）、思考档位、价格（折扣 / 限时免费 / 打折），以及按倍率 / 上下文 / 最大输出 / ID 排序 |
 | **配置** | 在线编辑 config.json：服务（监听地址 / API 密钥 / 单账号明细条数）、定时任务（签到 / 保活 / 旅行 / 活跃 / 成长任务五类时点与开关 + 余额刷新间隔）、账号池与流量治理、上游与高级（超时 / 出站 UA / 提示词模式 / 指纹脱敏 / 粘性路由）、日志（调用来源记录开关） |
 | **运行日志** | **请求记录表**（时间 / 结果 / 模型 / 账号 / **来源 IP** / **User-Agent** / 耗时 / Token / 积分 / 请求 ID），支持按 IP·UA·模型·账号·请求 ID 与结果筛选、读取条数、时间范围；下方 **运行日志** 按「任务 / 对话 / 系统」分频道，可开关自动滚动 |
+| **用户管理** | 用户列表（角色 / 创建时间 / 最近登录）、新增用户（管理员 / 普通用户）、重置密码、删除用户（以上仅管理员可见）；所有登录用户都可在此「修改我的密码」 |
 
 顶部另有「刷新」（向上游全量查询真实余额并回写；5 秒自动轮询只读内存，不打上游）与「添加账号」（浏览器内完成 OAuth 设备授权：显示授权链接 + 自动轮询，登录后凭证落盘并**热加载进池，免重启**，也支持导入 cockpit tools 导出的 JSON）。
 
@@ -665,10 +681,12 @@ http://127.0.0.1:7863/panel/
 
 ### 面板接口（`/panel/api/*`）
 
-与页面同一 Bearer 鉴权，可直接脚本化调用：
+除登录端点外，均接受「登录会话 Cookie」或「`Authorization: Bearer <api_key>`」，可直接脚本化调用：
 
 | 分组 | 端点 |
 |---|---|
+| 登录 / 身份 | `POST auth/login`（`{username,password}`，成功后下发会话 Cookie）· `POST auth/logout` · `GET auth/me` · `POST auth/password`（修改自己的密码） |
+| 用户管理（仅管理员） | `GET users` · `POST users`（新增）· `POST users/{username}/password`（重置密码）· `POST users/{username}/delete` |
 | 只读 | `GET overview` · `GET usage`（`hours` 或 `from`/`to`）· `GET packages` · `GET models` · `GET model_probes` · `GET logs` · `GET request_metrics` · `GET request_logs`（`limit` / `outcome` / `account` / `model` / `client_ip` / `user_agent` / `from` / `to`）· `GET config` · `GET tasks/queue` · `GET school/vouchers` |
 | 账号运维 | `POST accounts/{uid}/checkin` · `balance` · `revive` · `disable` · `remove`；`POST checkin_all` · `travel_all` · `activity_all` · `keepalive_all` · `balance_all` |
 | 任务 | `GET accounts/{uid}/tasks`；`POST accounts/{uid}/tasks/accept` · `accept_all` · `claim` · `auto` · `auto_all`；`POST tasks/scan_all` · `tasks/run_queue` |
@@ -679,7 +697,7 @@ http://127.0.0.1:7863/panel/
 
 **安全响应头**：面板页面与全部 `/panel/api/*` 响应统一带 `Content-Security-Policy`（`default-src 'none'`，脚本仅同源，`frame-ancestors 'none'` 禁嵌套）、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer` 等；前端脚本独立为同源 `app.js`，不含内联脚本与内联事件处理器。
 
-**鉴权实现**：`internal/httpauth` 统一 server 与 panel 的 Bearer 校验，使用 SHA-256 摘要 + `subtle.ConstantTimeCompare` 常量时间比较（避免逐字节比较泄露密钥信息）；上游返回的 `uid` 经白名单校验（`[A-Za-z0-9_-]`，长度 ≤64）后才用于拼凭证文件名，防止路径穿越。
+**鉴权实现**：`internal/httpauth` 统一 server 与 panel 的 Bearer 校验，使用 SHA-256 摘要 + `subtle.ConstantTimeCompare` 常量时间比较（避免逐字节比较泄露密钥信息）；面板账号口令使用 PBKDF2-HMAC-SHA256（210,000 次迭代 + 16 字节随机盐）摘要存储，登录会话为进程内随机 token + `HttpOnly/SameSite=Lax` Cookie（HTTPS 下自动 `Secure`），用户文件 0600 原子落盘；上游返回的 `uid` 经白名单校验（`[A-Za-z0-9_-]`，长度 ≤64）后才用于拼凭证文件名，防止路径穿越。
 
 > ⚠️ 公网部署提示：服务自身只提供明文 HTTP，**请务必置于 HTTPS 反向代理之后**（Nginx/Caddy 等）并配置访问限流；仅本机或私有网络使用时可直接运行。
 

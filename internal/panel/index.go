@@ -45,9 +45,24 @@ func setSecurityHeaders(w http.ResponseWriter) {
 }
 
 // index 输出面板页面（静态无秘密；数据接口 /panel/api/* 才走鉴权）。
+//
+// 启用面板登录后，未登录访问 /panel/ 一律 302 到 /panel/login——管理页面本身
+// 不再对公网匿名暴露（需求：绑域名部署时防止直接进入后台）。
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	if p.loginEnabled() {
+		if p.authErr != nil {
+			http.Error(w, "面板用户存储初始化失败，请查看服务端日志", http.StatusInternalServerError)
+			return
+		}
+		if _, _, _, ok := p.identity(r); !ok {
+			http.Redirect(w, r, "/panel/login", http.StatusFound)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// 管理页面不进浏览器缓存：退出登录后按"后退"不应还能看到上一会话的页面快照。
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(indexHTML)
 }

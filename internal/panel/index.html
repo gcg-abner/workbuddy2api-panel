@@ -60,6 +60,7 @@ body {
 .nav a svg { width: 15px; height: 15px; flex: none; opacity: .85; }
 .nav .sig { padding: 12px 16px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--ink-3); }
 .nav .sig .row { display: flex; align-items: center; gap: 7px; }
+.nav .sig #navUser { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 日志频道筛选 chips */
 .chips { display: inline-flex; gap: 4px; align-items: center; }
 .chips .chip { padding: 2px 10px; border-radius: 999px; }
@@ -617,10 +618,17 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <li><a href="#logs" data-view="logs">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>
         运行日志</a></li>
+      <li id="navUsers" hidden><a href="#users" data-view="users">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="5.5" r="2.3"/><path d="M1.8 13c.5-2.3 2.2-3.5 4.2-3.5s3.7 1.2 4.2 3.5"/><path d="M11 4.2a2.3 2.3 0 0 1 0 4.4M12.2 13c-.2-1.4-.8-2.5-1.7-3.2"/></svg>
+        用户管理</a></li>
     </ul>
     <div class="sig">
       <div class="row"><span class="pulse" id="navPulse"></span><span id="navState">连接中</span></div>
       <div class="row" style="margin-top:5px"><span id="navVer">v-</span> · <span id="navRedis">-</span></div>
+      <div class="row" style="margin-top:8px; gap:8px">
+        <span id="navUser" title="当前登录用户">-</span>
+        <button class="xs" id="btnLogout" title="退出登录" hidden>退出</button>
+      </div>
     </div>
   </nav>
 
@@ -905,7 +913,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
               <label class="fld"><span class="lb">API 密钥</span>
                 <div class="inline"><input name="api_key" id="cfgKey" type="password" placeholder="留空 = 不鉴权">
                 <button type="button" class="xs" id="btnEye">显示</button></div>
-                <span class="hint">立即生效（含面板自身）</span></label>
+                <span class="hint">网关 /v1 鉴权立即生效；面板始终要求账号登录</span></label>
             </div>
             <label class="fld"><span class="lb">单账号明细默认展示条数</span>
               <input name="package_detail_limit" type="number" min="1" placeholder="5">
@@ -1142,6 +1150,70 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <button class="xs" id="btnLogPin">自动滚动：开</button>
         </header>
         <pre id="logBox"></pre>
+      </div>
+    </section>
+
+    <!-- 用户管理（普通用户只能看到「修改我的密码」） -->
+    <section class="view" id="view-users" hidden>
+      <div class="box" id="usrListBox" hidden>
+        <header>
+          <h3>面板用户</h3>
+          <span class="grow"></span>
+          <span class="note" id="usrNote">—</span>
+        </header>
+        <div class="tbl-wrap">
+          <table class="acc" style="min-width:720px">
+            <thead><tr>
+              <th>用户名</th><th>角色</th><th>创建时间</th><th>最近登录</th><th class="c-acts">操作</th>
+            </tr></thead>
+            <tbody id="usrBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="box" id="usrAddBox" hidden>
+        <header><h3>新增用户</h3><span class="grow"></span><span class="note">新用户可登录面板并使用全部管理功能；仅管理员可管理用户</span></header>
+        <div class="pad">
+          <form id="usrAddForm">
+            <div class="grid3">
+              <label class="fld"><span class="lb">用户名</span>
+                <input name="username" autocomplete="off" placeholder="2-32 位字母/数字/_.-"></label>
+              <label class="fld"><span class="lb">密码</span>
+                <input name="password" type="password" autocomplete="new-password" placeholder="至少 8 位"></label>
+              <label class="fld"><span class="lb">角色</span>
+                <select name="role">
+                  <option value="user">普通用户</option>
+                  <option value="admin">管理员</option>
+                </select></label>
+            </div>
+            <div style="margin-top:12px; display:flex; align-items:center; gap:10px">
+              <button class="primary" type="submit">创建用户</button>
+              <span id="usrAddState" class="state ok" hidden></span>
+              <span id="usrAddErr" class="state err" hidden></span>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="box">
+        <header><h3>修改我的密码</h3></header>
+        <div class="pad">
+          <form id="pwdForm">
+            <div class="grid3">
+              <label class="fld"><span class="lb">当前密码</span>
+                <input name="current_password" type="password" autocomplete="current-password"></label>
+              <label class="fld"><span class="lb">新密码</span>
+                <input name="new_password" type="password" autocomplete="new-password" placeholder="至少 8 位"></label>
+              <label class="fld"><span class="lb">确认新密码</span>
+                <input name="confirm_password" type="password" autocomplete="new-password"></label>
+            </div>
+            <div style="margin-top:12px; display:flex; align-items:center; gap:10px">
+              <button class="primary" type="submit">更新密码</button>
+              <span id="pwdState" class="state ok" hidden></span>
+              <span id="pwdErr" class="state err" hidden></span>
+            </div>
+          </form>
+        </div>
       </div>
     </section>
   </div>

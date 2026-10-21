@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · WorkBuddy2API</title>
+<style>
+:root {
+  --bg: #0c0e14; --surface: #14171f; --surface-2: #1a1e28;
+  --line: #262c3a; --ink: #e8ebf2; --ink-2: #a8b0c2; --ink-3: #6b7488;
+  --accent: #5b7cfa; --accent-ink: #fff; --bad: #f0655f; --bad-soft: rgba(240,101,95,.12);
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 14px 40px -16px rgba(0,0,0,.65);
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f5f8; --surface: #fff; --surface-2: #f8f9fb;
+    --line: #e2e5ec; --ink: #14171f; --ink-2: #545c6e; --ink-3: #8b93a5;
+    --accent: #3d5fe0; --bad: #cf3b34; --bad-soft: rgba(207,59,52,.09);
+    --shadow: 0 1px 2px rgba(16,20,32,.06), 0 14px 40px -18px rgba(16,20,32,.18);
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--ink); font: 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  display: grid; place-items: center; padding: 24px;
+}
+::selection { background: rgba(91,124,250,.25); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card {
+  width: 100%; max-width: 380px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+  padding: 28px 28px 24px;
+}
+.brand { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.brand span { color: var(--ink-3); font-weight: 400; margin-left: 6px; }
+h1 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; margin: 22px 0 4px; }
+.sub { color: var(--ink-3); font-size: 12.5px; margin-bottom: 20px; }
+label { display: block; margin-bottom: 14px; }
+label .lb { display: block; font-size: 12.5px; color: var(--ink-2); margin-bottom: 6px; }
+input {
+  width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--ink); font: inherit;
+}
+input:focus { border-color: var(--accent); outline: none; }
+button {
+  width: 100%; padding: 10px 12px; margin-top: 4px; border: 0; border-radius: 8px;
+  background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600;
+  cursor: pointer;
+}
+button:disabled { opacity: .6; cursor: default; }
+.err {
+  margin: 0 0 12px; padding: 8px 10px; border-radius: 7px;
+  background: var(--bad-soft); color: var(--bad); font-size: 12.5px;
+}
+.hint { margin-top: 18px; color: var(--ink-3); font-size: 11.5px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">WorkBuddy2API<span>控制台</span></div>
+  <h1>登录管理面板</h1>
+  <p class="sub">请输入账号密码后进入管理页面</p>
+  <form id="loginForm" autocomplete="on">
+    <label><span class="lb">用户名</span>
+      <input id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+    <label><span class="lb">密码</span>
+      <input id="password" name="password" type="password" autocomplete="current-password" required></label>
+    <div id="err" class="err" role="alert" hidden></div>
+    <button id="submit" type="submit">登录</button>
+  </form>
+  <p class="hint">首次部署的管理员账号与初始密码见服务端启动日志（docker logs / 控制台）；也可通过 PANEL_ADMIN_USER / PANEL_ADMIN_PASSWORD 环境变量预先指定。</p>
+</main>
+<script src="login.js"></script>
+</body>
+</html>

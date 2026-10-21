@@ -65,6 +65,13 @@ type Config struct {
 	// 写入；空或文件不存在 = model_probes 端点返回空集，面板不显示任何实测标注）。
 	// 只读展示：网关不解析、不依赖其内容做任何路由/出站决策。
 	ProbeFile string
+
+	// UsersFile 面板登录用户存储路径（JSON，PBKDF2 口令摘要）。
+	// 非空 = 启用面板登录：/panel/ 未登录跳转 /panel/login，/panel/api/* 要求
+	// 会话 Cookie 或有效 api_key。空 = 保持旧行为（仅供测试/兼容装配；main 恒配置）。
+	UsersFile string
+	// SessionTTL 登录会话有效期；<=0 回落 24h。
+	SessionTTL time.Duration
 }
 
 // Panel 管理面板 handler。挂载方式：外层 mux Handle("/panel/", panel)，
@@ -90,6 +97,11 @@ type Panel struct {
 	// 任务中心执行队列（taskcenter.go）。
 	queueOnce sync.Once
 	q         *queueState
+
+	// auth 面板登录会话与用户存储（UsersFile 为空时为 nil = 不启用登录）。
+	// authErr 记录用户文件初始化失败，此时登录与受保护接口一律失败关闭。
+	auth    *authManager
+	authErr error
 }
 
 // tryLockAccount 尝试锁定账号的任务执行；已在执行返回 false。
@@ -139,6 +151,22 @@ func New(cfg Config) *Panel {
 		logs:    NewRing(500),
 		logins:  map[string]loginSession{},
 	}
+	// 面板账号体系：用户文件加载/首次管理员创建都在构造期完成，失败则失败关闭
+	// （index 与 /panel/api/* 全部拒绝），绝不回落到"无鉴权开放"。
+	if cfg.UsersFile != "" {
+		store, err := newUserStore(cfg.UsersFile)
+		if err != nil {
+			p.authErr = err
+			log.Printf("ERROR: panel: 用户存储初始化失败（面板登录不可用）：%v", err)
+		} else {
+			ttl := cfg.SessionTTL
+			if ttl <= 0 {
+				ttl = defaultSessionTTL
+			}
+			p.auth = newAuthManager(store, ttl)
+			log.Printf("panel: 面板登录已启用（用户存储 %s）", cfg.UsersFile)
+		}
+	}
 	p.routes()
 	return p
 }
@@ -149,6 +177,17 @@ func (p *Panel) Logs() *Ring { return p.logs }
 func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/{$}", p.index)
 	p.mux.HandleFunc("GET /panel/app.js", p.appScript)
+	// 登录页与登录 API：公开（未登录也要能拿到）。
+	p.mux.HandleFunc("GET /panel/login", p.loginPage)
+	p.mux.HandleFunc("GET /panel/login.js", p.loginScript)
+	p.mux.HandleFunc("POST /panel/api/auth/login", p.authLogin)
+	p.mux.HandleFunc("POST /panel/api/auth/logout", p.authLogout)
+	p.mux.HandleFunc("GET /panel/api/auth/me", p.authMe)
+	p.mux.HandleFunc("POST /panel/api/auth/password", p.authChangePassword)
+	p.mux.HandleFunc("GET /panel/api/users", p.withAuth(p.userList))
+	p.mux.HandleFunc("POST /panel/api/users", p.withAuth(p.userCreate))
+	p.mux.HandleFunc("POST /panel/api/users/{username}/delete", p.withAuth(p.userDelete))
+	p.mux.HandleFunc("POST /panel/api/users/{username}/password", p.withAuth(p.userSetPassword))
 	p.mux.HandleFunc("GET /panel/api/overview", p.withAuth(p.overview))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
 	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withAuth(p.requestMetrics))
@@ -195,11 +234,23 @@ func (p *Panel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mux.ServeHTTP(w, r)
 }
 
-// withAuth 与 server 包同口径的 Bearer 鉴权（经 httpauth 常量时间比较）；
-// api_key 为空时放行。密钥经 livecfg 快照读取：面板里改了 api_key，下一个请求
-// 即用新值（无需重启）。
+// withAuth 面板 API 鉴权：启用登录后接受「有效会话 Cookie」或「非空 api_key 的
+// Bearer」；未启用登录时保持旧的 Bearer 口径（api_key 为空即放行）。
+// 用户存储初始化失败时失败关闭（503），不退回匿名访问。
 func (p *Panel) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if p.loginEnabled() {
+			if p.authErr != nil {
+				writeErr(w, http.StatusServiceUnavailable, "panel user store unavailable")
+				return
+			}
+			if _, _, _, ok := p.identity(r); !ok {
+				writeErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			next(w, r)
+			return
+		}
 		if !httpauth.VerifyBearer(r, p.apiKey()) {
 			writeErr(w, http.StatusUnauthorized, "invalid_api_key")
 			return
@@ -237,10 +288,14 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.StickyCount != nil {
 		sticky = p.cfg.StickyCount()
 	}
+	username, role, _, _ := p.identity(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":         p.cfg.Version,
 		"uptime_sec":      int(time.Since(p.started).Seconds()),
 		"auth_required":   p.apiKey() != "",
+		"login_required":  p.loginEnabled(),
+		"username":        username,
+		"role":            role,
 		"redis_mode":      p.cfg.RedisMode,
 		"sticky_sessions": sticky,
 		"total":           total,
@@ -847,6 +902,8 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	raw, _ := json.Marshal(v)
 	w.Header().Set("Content-Type", "application/json")
+	// 面板 API 含账号/配额等敏感数据，且鉴权依赖 Cookie：禁止浏览器与中间代理缓存。
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
 }

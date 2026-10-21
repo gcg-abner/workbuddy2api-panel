@@ -4,6 +4,7 @@ const LS_KEY = 'wb2api.key', LS_THEME = 'wb2api.theme';
 let theme = localStorage.getItem(LS_THEME) || 'auto';   // auto | light | dark
 let view = 'accounts';
 let overviewData = null, cfgLoaded = null;
+let me = null;                    // 当前登录身份 {username, role, via}（/panel/api/auth/me）
 let logPin = true, loginState = null, loginTimer = null;
 let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
@@ -45,7 +46,14 @@ async function api(path, opts = {}) {
   if (k) h['Authorization'] = 'Bearer ' + k;
   if (opts.body) h['Content-Type'] = 'application/json';
   const r = await fetch('/panel/api/' + path, Object.assign({}, opts, { headers: h }));
-  if (r.status === 401) { openKey(); throw new Error('密钥无效或未填写'); }
+  if (r.status === 401) {
+    const d = await r.json().catch(() => ({}));
+    // 兼容旧装配（未启用面板账号、只配 api_key）：保留原来的密钥输入框。
+    if (d.error === 'invalid_api_key') { openKey(); throw new Error('密钥无效或未填写'); }
+    // 面板已启用账号登录：会话过期/未登录统一回登录页。
+    location.href = '/panel/login';
+    throw new Error('未登录或登录已过期');
+  }
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
@@ -338,7 +346,7 @@ let lastPackagesAt = 0;
 let expFetching = false;                       // 到期卡片在途标记（防重复打上游）
 const EXP_FRESH_MS = 2 * 60 * 1000;            // 缓存新鲜窗口：2 分钟内复用
 
-const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', config: '配置', logs: '运行日志' };
+const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', config: '配置', logs: '运行日志', users: '用户管理' };
 function go(v) {
   view = v;
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
@@ -349,6 +357,7 @@ function go(v) {
   if (v === 'logs') loadLogs();
   if (v === 'usage') loadUsage();
   if (v === 'packages') loadPackages();
+  if (v === 'users') loadUsers();
   // 到期提醒卡片：默认可见，进页面即用 overview 快照渲染（零上游请求，随首页统计
   // 每轮刷新）。不再「打开账号池就打上游」——逐账号实时查在账号多时会卡死面板。
   // 完整逐包明细由卡片上的「检查」按钮显式触发（loadPackages/loadExpiry）。
@@ -1220,6 +1229,7 @@ function refreshVisible() {
   else if (view === 'taskscenter') reattachQueueView();
 }
 function start() {
+  loadMe();
   loadOverview(true);
   if (refTimer) clearInterval(refTimer);
   refTimer = setInterval(refreshVisible, 5000);
@@ -2932,3 +2942,146 @@ if ($('btnExp')) $('btnExp').onclick = () => loadExpiry(true);
 
 // 「刷新」始终实时查（显式 force，不依赖事件对象真值）
 if ($('btnPk')) $('btnPk').onclick = () => loadPackages(true);
+
+/* ── 面板登录身份 / 用户管理 ──────────────────────────────────────── */
+/* 页面本身由服务端把关（未登录 302 到 /panel/login），这里只取当前身份用于：
+   1) 侧栏显示用户名并控制「用户管理」入口（仅管理员）；
+   2) 提供退出登录。 */
+async function loadMe() {
+  try {
+    const d = await api('auth/me');
+    me = d.user || null;
+  } catch (e) {
+    return;
+  }
+  if (!me) return;
+  const label = me.username + (me.role === 'admin' ? ' · 管理员' : '');
+  if ($('navUser')) $('navUser').textContent = label;
+  // 会话用户都能改自己的密码；用户列表/新增仅管理员可见（api_key 旧模式没有用户体系）。
+  const sessionAdmin = me.role === 'admin' && me.via === 'session';
+  if ($('navUsers')) $('navUsers').hidden = me.via !== 'session';
+  if ($('btnLogout')) $('btnLogout').hidden = me.via !== 'session';
+  if ($('usrListBox')) $('usrListBox').hidden = !sessionAdmin;
+  if ($('usrAddBox')) $('usrAddBox').hidden = !sessionAdmin;
+}
+
+if ($('btnLogout')) $('btnLogout').onclick = async () => {
+  try { await api('auth/logout', { method: 'POST' }); } catch (e) { /* 已失效也照常回登录页 */ }
+  location.href = '/panel/login';
+};
+
+function fmtUserTime(v) {
+  const ms = parseAPITime(v);
+  return ms ? fmtLocalDateTime(ms) : '—';
+}
+
+async function loadUsers() {
+  const tb = $('usrBody');
+  if (!tb) return;
+  if (me && me.role !== 'admin') {
+    if ($('usrListBox')) $('usrListBox').hidden = true;
+    if ($('usrAddBox')) $('usrAddBox').hidden = true;
+    return;
+  }
+  tb.innerHTML = '<tr><td colspan="5"><div class="empty">读取中…</div></td></tr>';
+  try {
+    const d = await api('users');
+    renderUsers(d.users || [], d.me || '');
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="5"><div class="empty">读取失败：' + esc(e.message) + '</div></td></tr>';
+  }
+}
+
+function renderUsers(users, meName) {
+  const tb = $('usrBody');
+  if (!tb) return;
+  if (!users.length) {
+    tb.innerHTML = '<tr><td colspan="5"><div class="empty">没有用户</div></td></tr>';
+    return;
+  }
+  tb.innerHTML = users.map(u => {
+    const self = u.username === meName;
+    const role = u.role === 'admin' ? '<span class="tag ok">管理员</span>' : '<span class="tag mute">普通用户</span>';
+    const del = self
+      ? '<button class="xs" disabled title="不能删除当前登录账号">删除</button>'
+      : '<button class="xs" data-ua="del" data-u="' + esc(u.username) + '">删除</button>';
+    return '<tr>' +
+      '<td><b>' + esc(u.username) + '</b>' + (self ? ' <span class="tag mute">我</span>' : '') + '</td>' +
+      '<td>' + role + '</td>' +
+      '<td style="color:var(--ink-3)">' + esc(fmtUserTime(u.created_at)) + '</td>' +
+      '<td style="color:var(--ink-3)">' + esc(u.last_login_at ? ago(u.last_login_at) : '—') + '</td>' +
+      '<td class="c-acts">' +
+        '<button class="xs" data-ua="pwd" data-u="' + esc(u.username) + '">重置密码</button> ' + del +
+      '</td></tr>';
+  }).join('');
+  const note = $('usrNote');
+  if (note) note.textContent = users.length + ' 个用户';
+}
+
+if ($('usrBody')) $('usrBody').addEventListener('click', async ev => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest('button[data-ua]') : null;
+  if (!btn) return;
+  const name = btn.getAttribute('data-u') || '';
+  const act = btn.getAttribute('data-ua');
+  if (!name) return;
+  if (act === 'pwd') {
+    const np = prompt('为 ' + name + ' 设置新密码（至少 8 位）');
+    if (np === null) return;
+    if (np.length < 8) { toast('密码至少需要 8 个字符', 'err'); return; }
+    try {
+      await api('users/' + encodeURIComponent(name) + '/password', {
+        method: 'POST', body: JSON.stringify({ password: np })
+      });
+      toast('已重置 ' + name + ' 的密码', 'ok');
+    } catch (e) { toast('重置失败：' + e.message, 'err'); }
+    return;
+  }
+  if (act === 'del') {
+    if (!confirm('确定删除用户 ' + name + ' ？该用户的登录会话会立即失效。')) return;
+    try {
+      await api('users/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
+      toast('已删除用户 ' + name, 'ok');
+      loadUsers();
+    } catch (e) { toast('删除失败：' + e.message, 'err'); }
+  }
+});
+
+if ($('usrAddForm')) $('usrAddForm').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  const name = f.elements.username.value.trim();
+  const password = f.elements.password.value;
+  const role = f.elements.role.value;
+  const ok = $('usrAddState'), bad = $('usrAddErr');
+  if (ok) ok.hidden = true;
+  if (bad) bad.hidden = true;
+  const fail = msg => { if (bad) { bad.textContent = msg; bad.hidden = false; } toast(msg, 'err'); };
+  if (!name) { fail('请输入用户名'); return; }
+  if (password.length < 8) { fail('密码至少需要 8 个字符'); return; }
+  try {
+    await api('users', { method: 'POST', body: JSON.stringify({ username: name, password: password, role: role }) });
+    if (ok) { ok.textContent = '已创建用户 ' + name; ok.hidden = false; }
+    f.reset();
+    loadUsers();
+  } catch (e) { fail(e.message); }
+});
+
+if ($('pwdForm')) $('pwdForm').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  const cur = f.elements.current_password.value;
+  const np = f.elements.new_password.value;
+  const cp = f.elements.confirm_password.value;
+  const ok = $('pwdState'), bad = $('pwdErr');
+  if (ok) ok.hidden = true;
+  if (bad) bad.hidden = true;
+  const fail = msg => { if (bad) { bad.textContent = msg; bad.hidden = false; } toast(msg, 'err'); };
+  if (!cur) { fail('请输入当前密码'); return; }
+  if (np.length < 8) { fail('新密码至少需要 8 个字符'); return; }
+  if (np !== cp) { fail('两次输入的新密码不一致'); return; }
+  try {
+    await api('auth/password', { method: 'POST', body: JSON.stringify({ current_password: cur, new_password: np }) });
+    if (ok) { ok.textContent = '密码已更新'; ok.hidden = false; }
+    f.reset();
+  } catch (e) { fail(e.message); }
+});
